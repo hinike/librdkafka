@@ -512,7 +512,8 @@ static const struct rd_kafka_property rd_kafka_properties[] = {
          * as configuration properties. */
         { _RK_GLOBAL, "interceptors", _RK_C_INTERNAL,
           _RK(interceptors),
-          "Interceptors added through rd_kafka_conf_interceptor_add_..()",
+          "Interceptors added through rd_kafka_conf_interceptor_add_..() "
+          "and any configuration handled by interceptors.",
           .ctor = rd_kafka_conf_interceptor_ctor,
           .dtor = rd_kafka_conf_interceptor_dtor,
           .copy = rd_kafka_conf_interceptor_copy },
@@ -850,8 +851,18 @@ rd_kafka_anyconf_set_prop0 (int scope, void *conf,
 			    const struct rd_kafka_property *prop,
 			    const char *istr, int ival, rd_kafka_conf_set_mode_t set_mode,
                             char *errstr, size_t errstr_size) {
+        rd_kafka_conf_res_t res;
 
 #define _RK_PTR(TYPE,BASE,OFFSET)  (TYPE)(void *)(((char *)(BASE))+(OFFSET))
+
+        /* Try interceptors first (only for GLOBAL config) */
+        if (scope & _RK_GLOBAL) {
+                res = rd_kafka_interceptors_on_conf_set(conf, prop->name, istr,
+                                                        errstr, errstr_size);
+                if (res != RD_KAFKA_CONF_UNKNOWN)
+                        return res;
+        }
+
 
         if (prop->set) {
                 /* Custom setter */
@@ -1247,6 +1258,7 @@ static int rd_kafka_anyconf_set (int scope, void *conf,
 				 char *errstr, size_t errstr_size) {
 	char estmp[1];
 	const struct rd_kafka_property *prop;
+        rd_kafka_conf_res_t res;
 
 	if (!errstr) {
 		errstr = estmp;
@@ -1255,6 +1267,19 @@ static int rd_kafka_anyconf_set (int scope, void *conf,
 
 	if (value && !*value)
 		value = NULL;
+
+        /* Try interceptors first (only for GLOBAL config for now) */
+        if (scope & _RK_GLOBAL) {
+                res = rd_kafka_interceptors_on_conf_set(
+                        (rd_kafka_conf_t *)conf, name, value,
+                        errstr, errstr_size);
+                /* Handled (successfully or not) by interceptor. */
+                if (res != RD_KAFKA_CONF_UNKNOWN)
+                        return res;
+        }
+
+        /* Then global config */
+
 
 	for (prop = rd_kafka_properties ; prop->name ; prop++) {
 
@@ -1285,6 +1310,7 @@ rd_kafka_conf_res_t rd_kafka_conf_set (rd_kafka_conf_t *conf,
                                        const char *value,
                                        char *errstr, size_t errstr_size) {
         rd_kafka_conf_res_t res;
+
         res = rd_kafka_anyconf_set(_RK_GLOBAL, conf, name, value,
                                    errstr, errstr_size);
         if (res != RD_KAFKA_CONF_UNKNOWN)
@@ -1325,11 +1351,12 @@ static void rd_kafka_anyconf_clear (int scope, void *conf,
 		char **str = _RK_PTR(char **, conf, prop->offset);
 
 		if (*str) {
-                        if (prop->set)
+                        if (prop->set) {
                                 prop->set(scope, conf, prop->name, NULL, *str,
                                           _RK_CONF_PROP_SET_DEL, NULL, 0);
-                        else
-                                rd_free(*str);
+                                /* FALLTHRU */
+                        }
+                        rd_free(*str);
 			*str = NULL;
 		}
 	}
@@ -1383,6 +1410,10 @@ static void rd_kafka_anyconf_clear (int scope, void *conf,
 
 void rd_kafka_anyconf_destroy (int scope, void *conf) {
 	const struct rd_kafka_property *prop;
+
+        /* Call on_conf_destroy() interceptors */
+        if (scope == _RK_GLOBAL)
+                rd_kafka_interceptors_on_conf_destroy(conf);
 
 	for (prop = rd_kafka_properties; prop->name ; prop++) {
 		if (!(prop->scope & scope))
@@ -1455,6 +1486,7 @@ static void rd_kafka_anyconf_copy (int scope, void *dst, const void *src) {
                         break;
                 }
                 case _RK_C_INTERNAL:
+                        /* Handled by ->copy() below. */
                         break;
 		default:
 			continue;
@@ -1473,6 +1505,8 @@ static void rd_kafka_anyconf_copy (int scope, void *dst, const void *src) {
 
 rd_kafka_conf_t *rd_kafka_conf_dup (const rd_kafka_conf_t *conf) {
 	rd_kafka_conf_t *new = rd_kafka_conf_new();
+
+        rd_kafka_interceptors_on_conf_dup(new, conf);
 
 	rd_kafka_anyconf_copy(_RK_GLOBAL, new, conf);
 
