@@ -46,8 +46,10 @@
 
 #ifdef _MSC_VER
 #define DLL_EXPORT __declspec(dllexport)
+#define my_snprintf(buf,sz,...) _snprintf_s(buf,sz,1,__VA_ARGS__)
 #else
 #define DLL_EXPORT
+#define my_snprintf(...) snprintf(__VA_ARGS__)
 #endif
 
 
@@ -123,9 +125,9 @@ static rd_kafka_conf_res_t on_conf_set (rd_kafka_conf_t *conf,
         if (!strcmp(name, "interceptor_test.good"))
                 return RD_KAFKA_CONF_OK;
         else if (!strcmp(name, "interceptor_test.bad")) {
-                snprintf(errstr, errstr_size,
-                         "on_conf_set failed deliberately for %s=%s",
-                         name, val);
+                my_snprintf(errstr, errstr_size,
+                            "on_conf_set failed deliberately for %s=%s",
+                            name, val);
                 return RD_KAFKA_CONF_INVALID;
         }
 
